@@ -7,8 +7,13 @@ import { pickSubmitPayload } from "@/lib/submit-payload";
 export const runtime = "nodejs";
 
 const MAX_BODY_BYTES = 32_768; // 32 KiB
-const RATE_LIMIT = 20;
-const RATE_WINDOW_MS = 60_000;
+/** Tight anonymous limits (CAPTCHA-free). */
+const PER_IP_PER_MINUTE = 3;
+const PER_IP_PER_DAY = 8;
+const GLOBAL_PER_HOUR = 120;
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
 
 function asOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -16,18 +21,36 @@ function asOptionalString(value: unknown): string | null {
   return trimmed === "" ? null : trimmed;
 }
 
+function rateLimited(retryAfterSec: number) {
+  return NextResponse.json(
+    { error: "請求過於頻繁，請稍後再試" },
+    {
+      status: 429,
+      headers: { "Retry-After": String(retryAfterSec) },
+    },
+  );
+}
+
 export async function POST(request: Request) {
   const ip = clientIp(request);
-  const limited = takeToken(`submit:${ip}`, RATE_LIMIT, RATE_WINDOW_MS);
-  if (!limited.ok) {
-    return NextResponse.json(
-      { error: "請求過於頻繁，請稍後再試" },
-      {
-        status: 429,
-        headers: { "Retry-After": String(limited.retryAfterSec) },
-      },
-    );
-  }
+
+  const perMinute = takeToken(
+    `submit:min:${ip}`,
+    PER_IP_PER_MINUTE,
+    MINUTE_MS,
+  );
+  if (!perMinute.ok) return rateLimited(perMinute.retryAfterSec);
+
+  const perDay = takeToken(`submit:day:${ip}`, PER_IP_PER_DAY, DAY_MS);
+  if (!perDay.ok) return rateLimited(perDay.retryAfterSec);
+
+  // Global cap so many spoofed / rotated addresses cannot fill the DB unbounded.
+  const globalHour = takeToken(
+    "submit:global:hour",
+    GLOBAL_PER_HOUR,
+    HOUR_MS,
+  );
+  if (!globalHour.ok) return rateLimited(globalHour.retryAfterSec);
 
   // Require Content-Length so oversized bodies are rejected before streaming.
   const contentLength = request.headers.get("content-length");
