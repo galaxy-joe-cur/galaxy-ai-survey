@@ -52,14 +52,14 @@ export async function POST(request: Request) {
   );
   if (!globalHour.ok) return rateLimited(globalHour.retryAfterSec);
 
-  // Require Content-Length so oversized bodies are rejected before streaming.
+  // Content-Length is optional (browsers / proxies may omit it). When present,
+  // reject oversized declarations early; always enforce a stream byte cap.
   const contentLength = request.headers.get("content-length");
-  if (contentLength == null) {
-    return NextResponse.json({ error: "缺少 Content-Length" }, { status: 411 });
-  }
-  const declared = Number(contentLength);
-  if (!Number.isFinite(declared) || declared < 0 || declared > MAX_BODY_BYTES) {
-    return NextResponse.json({ error: "內容過大" }, { status: 413 });
+  if (contentLength != null) {
+    const declared = Number(contentLength);
+    if (!Number.isFinite(declared) || declared < 0 || declared > MAX_BODY_BYTES) {
+      return NextResponse.json({ error: "內容過大" }, { status: 413 });
+    }
   }
 
   let raw: string;
